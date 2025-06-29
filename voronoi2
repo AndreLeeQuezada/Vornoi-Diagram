@@ -152,26 +152,19 @@ function insert_point!(p::Punkt, d::Delaunay)
     push!(d.triangles, tri_bcp)
     push!(d.triangles, tri_cap)
 
-    # Schritt 6: Setze Zwillinge der neuen Kanten richtig (wichtig für flips)
-    # Damit die Kanten zwischen neuen Dreiecken sich gegenseitig als twin erkennen
-
+    # Schritt 6: Setze Zwillinge der neuen Kanten
+        # damit die Kanten zwischen neuen Dreiecken sich gegenseitig als twin erkennen
     # Kanten der neuen Dreiecke:
     abp_edges = [tri_abp.edge, tri_abp.edge.next, tri_abp.edge.prev]
     bcp_edges = [tri_bcp.edge, tri_bcp.edge.next, tri_bcp.edge.prev]
     cap_edges = [tri_cap.edge, tri_cap.edge.next, tri_cap.edge.prev]
 
     # Kanten, die an der Spitze p anliegen:
-    # Wir verbinden die Kanten zwischen den neuen Dreiecken an den gemeinsamen Seiten
-
-    # Verbindung zwischen (a,b) in tri_abp und (b,a) in tri_bcp (gegenüberliegende Kanten)
+    # verbinde die Kanten zwischen den neuen Dreiecken an den gemeinsamen Seiten
     abp_edges[1].twin = bcp_edges[3]
     bcp_edges[3].twin = abp_edges[1]
-
-    # Verbindung zwischen (b,c) in tri_bcp und (c,b) in tri_cap
     bcp_edges[1].twin = cap_edges[3]
     cap_edges[3].twin = bcp_edges[1]
-
-    # Verbindung zwischen (c,a) in tri_cap und (a,c) in tri_abp
     cap_edges[1].twin = abp_edges[3]
     abp_edges[3].twin = cap_edges[1]
 
