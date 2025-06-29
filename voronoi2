@@ -72,7 +72,7 @@ function create_triangle(a::Punkt, b::Punkt, c::Punkt)
     return triangle
 end
 
-function create_bounding_triangle(n::Float64)
+function create_limit_triangle(n::Float64)
     # Punkte außerhalb des Bereichs [0, n] × [0, n]
     p1 = Punkt(-100.0, -100.0)
     p2 = Punkt(n + 100.0, -100.0)
@@ -116,6 +116,13 @@ function create_bounding_triangle(n::Float64)
     # Weise die Flächen zu
     e1.face = e2.face = e3.face = triangle
     return triangle
+end
+
+# Funktion zum Initialisieren von Delaunay mit dem limit_triangle
+function start_delaunay(n::Float64)
+    lim_tri = create_limit_triangle(n)
+    delaunay = Delaunay(Set([lim_tri]), lim_tri)
+    return delaunay
 end
 
 function insert_point!(p::Punkt, d::Delaunay)
