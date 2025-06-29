@@ -1,0 +1,304 @@
+abstract type Face end
+
+struct Punkt
+    x::Float64
+    y::Float64
+end
+
+mutable struct Kante
+    origin::Punkt
+    twin::Kante
+    next::Kante
+    prev::Kante
+    face::Face
+end
+
+mutable struct Dreieck <: Face
+    edge::Kante
+end
+
+mutable struct Delaunay
+    triangles::Set{Dreieck}
+    bounding_triangle::Dreieck
+end
+
+"Durchsucht alle Dreiecke in der Delaunay-Triangulierung `d` und 
+sucht ein Dreieck, das den Punkt `p` enthält."
+function find_triangle(p::Punkt, d::Delaunay)
+    for triangle in d.triangles
+        # Dreieckspunkte 
+        a = triangle.edge.origin
+        b = triangle.edge.next.origin
+        c = triangle.edge.next.next.origin
+
+        # Orientierungstest für jede Dreieckskante
+        dp1 = (b.x-a.x)*(p.y-a.y) - (b.y-a.y)*(p.x-a.x)
+        dp2 = (c.x-b.x)*(p.y-b.y) - (c.y-b.y)*(p.x-b.x)
+        dp3 = (a.x-c.x)*(p.y-c.y) - (a.y-c.y)*(p.x-c.x)
+
+        # Wenn alle Vorzeichen gleich → Punkt liegt im Inneren
+        if (dp1 >= 0 && dp2 >= 0 && dp3 >= 0) || (dp1 <= 0 && dp2 <= 0 && dp3 <= 0)
+            return triangle 
+        end
+    end
+    return nothing # Kein Dreieck gefunden
+end
+
+function create_triangle(a::Punkt, b::Punkt, c::Punkt)
+    # Erstelle Kanten (a->b), (b->c), (c->a)
+    ab = Kante(a, nothing, nothing, nothing, nothing)
+    bc = Kante(b, nothing, nothing, nothing, nothing)
+    ca = Kante(c, nothing, nothing, nothing, nothing)
+
+    # Erstelle Zwillinge (b->a), (c->b), (a->c)
+    ba = Kante(b, ab, nothing, nothing, nothing)
+    cb = Kante(c, bc, nothing, nothing, nothing)
+    ac = Kante(a, ca, nothing, nothing, nothing)
+
+    # Verknüpfe Kanten und Zwillinge
+    ab.twin = ba; bc.twin = cb; ca.twin = ac
+
+    # Setze next/prev für Kanten im Dreieck (im Uhrzeigersinn)
+    ab.next = bc; bc.next = ca; ca.next = ab
+    ab.prev = ca; bc.prev = ab; ca.prev = bc
+
+    # Zwillinge sind auf der gegenüberliegenden Seite, Reihenfolge auch setzen
+    ba.next = ac; cb.next = ba; ac.next = cb
+    ba.prev = cb; cb.prev = ac; ac.prev = ba
+
+    # Erstelle das Dreieck mit einer Kante
+    triangle = Dreieck(ab)
+    ab.face = bc.face = ca.face = triangle
+    return triangle
+end
+
+function create_bounding_triangle(n::Float64)
+    # Punkte außerhalb des Bereichs [0, n] × [0, n]
+    p1 = Punkt(-100.0, -100.0)
+    p2 = Punkt(n + 100.0, -100.0)
+    p3 = Punkt(-100.0, n + 100.0)
+
+    # Erstelle die drei Kanten
+    e1 = Kante(p1, nothing, nothing, nothing, nothing)
+    e2 = Kante(p2, nothing, nothing, nothing, nothing)
+    e3 = Kante(p3, nothing, nothing, nothing, nothing)
+
+    # Erstelle Zwillinge der Kanten
+    e1_twin = Kante(p2, e1, nothing, nothing, nothing)
+    e2_twin = Kante(p3, e2, nothing, nothing, nothing)
+    e3_twin = Kante(p1, e3, nothing, nothing, nothing)
+
+    e1.twin = e1_twin
+    e2.twin = e2_twin
+    e3.twin = e3_twin
+
+    # Setze die Referenzen (im Uhrzeigersinn)
+    e1.next = e2
+    e2.next = e3
+    e3.next = e1
+
+    e1.prev = e3
+    e2.prev = e1
+    e3.prev = e2
+
+    # Setze die Referenzen für Zwillinge (im Gegenuhrzeigersinn)
+    e1_twin.next = e3_twin
+    e3_twin.next = e2_twin
+    e2_twin.next = e1_twin
+
+    e1_twin.prev = e2_twin
+    e2_twin.prev = e3_twin
+    e3_twin.prev = e1_twin
+
+    # Erstelle das limitierende Dreieck mit der ersten Kante
+    triangle = Dreieck(e1)
+
+    # Weise die Flächen zu
+    e1.face = e2.face = e3.face = triangle
+    return triangle
+end
+
+function insert_point!(p::Punkt, d::Delaunay)
+    # Schritt 1: Finde das Dreieck, das den Punkt p enthält
+    abc = find_triangle(p, d)  # Platzhalter, nimmt an, dass es existiert und ein Dreieck zurückgibt
+    if abc === nothing && !isempty(d.triangles)
+        error("Gibt kein Dreieck mit Punkt $p")
+    elseif abc === nothing
+        # Verwende bounding_triangle als Start (nur für den ersten Punkt)
+        abc = d.bounding_triangle
+    end
+
+    # Schritt 2: Hole die Kanten des gefundenen Dreiecks
+    e1 = abc.edge
+    e2 = e1.next
+    e3 = e2.next
+
+    a = e1.origin
+    b = e2.origin
+    c = e3.origin
+    
+    # Schritt 3: Erstelle 3 neue Dreiecke mit p (a,b,p), (b,c,p), (c,a,p)
+    tri_abp = create_triangle(a, b, p)
+    tri_bcp = create_triangle(b, c, p)
+    tri_cap = create_triangle(c, a, p)
+
+    # Schritt 4: Entferne altes Dreieck aus Menge
+    if abc !== d.bounding_triangle
+        delete!(d.triangles, abc)
+    end
+
+    # Schritt 5: Füge neue Dreiecke zur Menge hinzu
+    push!(d.triangles, tri_abp)
+    push!(d.triangles, tri_bcp)
+    push!(d.triangles, tri_cap)
+
+    # Schritt 6: Setze Zwillinge der neuen Kanten richtig (wichtig für flips)
+    # Damit die Kanten zwischen neuen Dreiecken sich gegenseitig als twin erkennen
+
+    # Kanten der neuen Dreiecke:
+    abp_edges = [tri_abp.edge, tri_abp.edge.next, tri_abp.edge.prev]
+    bcp_edges = [tri_bcp.edge, tri_bcp.edge.next, tri_bcp.edge.prev]
+    cap_edges = [tri_cap.edge, tri_cap.edge.next, tri_cap.edge.prev]
+
+    # Kanten, die an der Spitze p anliegen:
+    # Wir verbinden die Kanten zwischen den neuen Dreiecken an den gemeinsamen Seiten
+
+    # Verbindung zwischen (a,b) in tri_abp und (b,a) in tri_bcp (gegenüberliegende Kanten)
+    abp_edges[1].twin = bcp_edges[3]
+    bcp_edges[3].twin = abp_edges[1]
+
+    # Verbindung zwischen (b,c) in tri_bcp und (c,b) in tri_cap
+    bcp_edges[1].twin = cap_edges[3]
+    cap_edges[3].twin = bcp_edges[1]
+
+    # Verbindung zwischen (c,a) in tri_cap und (a,c) in tri_abp
+    cap_edges[1].twin = abp_edges[3]
+    abp_edges[3].twin = cap_edges[1]
+
+    # Schritt 7: Wende rekursiven Flip auf alle Kanten an, die neu entstanden sind und evtl. nicht Delaunay-konform sind
+    recursive_flip!(abp_edges[1], d)
+    recursive_flip!(bcp_edges[1], d)
+    recursive_flip!(cap_edges[1], d)
+
+    return nothing
+end
+
+
+function check_umkreis(abc::Dreieck, d::Punkt)::Bool
+    e1 = abc.edge
+    e2 = e1.next
+    e3 = e1.prev
+
+    a = e1.origin
+    b = e2.origin
+    c = e3.origin
+    
+    a11, a12, a13, a14 = a.x, a.y, ((a.x)^2+(a.y)^2), 1 
+    a21, a22, a23, a24 = b.x, b.y, ((b.x)^2+(b.y)^2), 1 
+    a31, a32, a33, a34 = c.x, c.y, ((c.x)^2+(c.y)^2), 1 
+    a41, a42, a43, a44 = d.x, d.y, ((d.x)^2+(d.y)^2), 1 
+
+    det = a11 * (a22*(a33*a44 - a43*a34) - a23*(a32*a44 - a42*a34) + a24*(a32*a43 - a42*a33)) 
+        - a12 * (a21*(a33*a44 - a43*a34) - a23*(a31*a44 - a41*a34) + a24*(a31*a43 - a41*a33)) 
+        + a13 * (a21*(a32*a44 - a42*a34) - a22*(a31*a44 - a41*a34) + a24*(a31*a42 - a41*a32)) 
+        - a14 * (a21*(a32*a43 - a42*a33) - a22*(a31*a43 - a41*a33) + a23*(a31*a42 - a41*a32))
+
+    return det>0
+end
+
+function check_umkreis(e::Kante)
+    a = e.origin
+    b = e.twin.origin
+    c = e.next.origin
+    d = e.twin.next.origin
+
+    abc = create_triangle(a,b,c)
+    return check_umkreis(abc, d)
+end
+
+"Funktion zur rekursiven Durchführung eines Flips"
+function recursive_flip!(e::Kante, d::Delaunay)
+    # Überprüfe, ob ein Flip notwendig ist 
+    if check_umkreis(e)  # Wir nehmen an, dass true zurückgegeben wird, wenn der Flip notwendig ist
+        flip!(e, d)
+        recursive_flip!(e.next, d)    # Überprüfe die neue Kante nach dem Flip
+        recursive_flip!(e.twin.next, d)  # Überprüfe die gegenüberliegende Kante
+    end
+    return nothing
+end
+
+function flip!(e::Kante, d::Delaunay)
+    # Erhalte die Flächen (Dreiecke) auf beiden Seiten der Kante e
+    face1 = e.face
+    face2 = e.twin.face
+
+    # Erhalte die Punkte der Dreiecke
+    # Wir gehen davon aus, dass face1 und face2 Dreieck sind
+    edge1 = face1.edge
+    edge2 = face2.edge
+
+    # Finde die gegenüberliegenden Punkte (p und q) in den Dreiecken
+    p = edge1.origin  # Punkt der ursprünglichen Kante
+    q = e.twin.next.origin  # Gegenüberliegender Punkt im Dreieck von face2
+
+    # Erstelle neue Kanten für die neuen Dreiecke (p-q-c und q-p-b)
+    # Zuerst benötigen wir die aktuellen Kanten um e herum
+    next_e = e.next
+    prev_e = e.prev
+    next_twin = e.twin.next
+    prev_twin = e.twin.prev
+
+    # Erstelle neue Kante e_new (q -> p)
+    e_new = Kante(q, e.twin, next_e, prev_twin, face1)
+    e_new.twin = Kante(p, e, next_twin, prev_e, face2)
+
+    # Aktualisiere die Referenzen
+    e_new.next.next = e_new
+    e_new.twin.next.next = e_new.twin
+    e_new.prev = e_new.twin
+    e_new.twin.prev = e_new
+
+    # Aktualisiere die Flächen mit den neuen Kanten
+    face1.edge = e_new
+    face2.edge = e_new.twin
+
+    # Das Entfernen der alten Kante (e) ist nicht explizit erforderlich,
+    # da die Referenzen aktualisiert wurden
+end
+
+function circle_midpoint(a::Punkt, b::Punkt, c::Punkt)::Punkt
+    # Mittelpunkte der Seiten ab, bc
+    mid_ab = Punkt((a.x + b.x) / 2, (a.y + b.y) / 2)
+    mid_bc = Punkt((b.x + c.x) / 2, (b.y + c.y) / 2)
+
+    # drehe die Richtungsvektoren senkrecht zu ab, bc
+    vec_ab = Punkt(-(b.y - a.y), b.x - a.x)  
+    vec_bc = Punkt(-(c.y - b.y), c.x - b.x)
+
+    # bestimme Schnittpunkt der beiden Mittelsenkrechten 
+    # es gilt: mid_ab + vec_ab*s = mid_bc + vec_bc*t
+    A = [vec_ab.x -vec_bc.x; vec_ab.y -vec_bc.y]  # Koeffizientenmatrix
+    b_vec = [mid_bc.x - mid_ab.x; mid_bc.y - mid_ab.y]  # Differenz der Mittelpunkte
+    
+    # Löse lineares Gleichungssystem
+    lin_gs = A \ b_vec
+
+    # Punkt auf Geraden: mid_ab + t * vec_ab
+    mid_x = mid_ab.x + lin_gs[1] * vec_ab.x
+    mid_y = mid_ab.y + lin_gs[1] * vec_ab.y
+
+    return Punkt(mid_x, mid_y)
+end
+
+function voronoi(D::Delaunay)
+    cells = Dict{Punkt, Vector{Punkt}}()
+    for triangle in D.triangles
+        e1, e2, e3 = triangle.edge, triangle.edge.next, triangle.edge.next.next
+        a, b, c = e1.origin, e2.origin, e3.origin
+        center = circle_midpoint(a, b, c)
+        for point in (a, b, c)
+            push!(get!(cells, point, Punkt[]), center)
+        end
+    end
+    return cells
+end
