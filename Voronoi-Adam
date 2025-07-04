@@ -1,0 +1,323 @@
+using LinearAlgebra
+using Test
+
+# Abstrakter Typ für Flächen (Voronoi-Zellen oder Dreiecke)
+abstract type Face end
+
+# Datenstruktur für einen Punkt im 2D-Raum
+struct Punkt
+    x::Float64
+    y::Float64
+end
+
+# Datenstruktur für eine gerichtete Kante in der DCEL
+mutable struct Kante
+    origin::Punkt           # Startpunkt der Kante
+    twin::Union{Kante, Nothing}  # Gegenkante (Dual Edge)
+    next::Union{Kante, Nothing}  # Nächste Kante im Dreieck (gegen Uhrzeigersinn)
+    prev::Union{Kante, Nothing}  # Vorherige Kante im Dreieck
+    face::Union{Face, Nothing}   # Angrenzende Fläche (links der Kante)
+end
+
+# Datenstruktur für ein Dreieck in der Delaunay-Triangulierung
+mutable struct Dreieck <: Face
+    edge::Union{Kante, Nothing}  # Eine repräsentative Kante des Dreiecks
+end
+
+# Haupt-Datenstruktur für die Delaunay-Triangulierung
+mutable struct Delaunay
+    triangles::Set{Dreieck}   # Alle Dreiecke der Triangulierung
+    bounding_triangle::Dreieck  # Umfassendes Startdreieck
+end
+
+# Hilfsfunktionen für Punkte
+function Base.:(==)(a::Punkt, b::Punkt)
+    return a.x ≈ b.x && a.y ≈ b.y
+end
+
+function Base.hash(p::Punkt, h::UInt)
+    return hash((p.x, p.y), h)
+end
+
+# Berechnet die 4x4 Determinante für den Umkreis-Test
+function det4(a::Punkt, b::Punkt, c::Punkt, d::Punkt)
+    M = [a.x a.y a.x^2+a.y^2 1;
+         b.x b.y b.x^2+b.y^2 1;
+         c.x c.y c.x^2+c.y^2 1;
+         d.x d.y d.x^2+d.y^2 1]
+    return det(M)
+end
+
+# Findet das Dreieck, das einen Punkt enthält (mit Toleranz für numerische Stabilität)
+function find_triangle(p::Punkt, d::Delaunay)
+    for triangle in d.triangles
+        a = triangle.edge.origin
+        b = triangle.edge.next.origin
+        c = triangle.edge.next.next.origin
+
+        # Verbesserte Flächenberechnung mit Toleranz
+        area1 = (b.x - a.x)*(p.y - a.y) - (b.y - a.y)*(p.x - a.x)
+        area2 = (c.x - b.x)*(p.y - b.y) - (c.y - b.y)*(p.x - b.x)
+        area3 = (a.x - c.x)*(p.y - c.y) - (a.y - c.y)*(p.x - c.x)
+        
+        # Toleranz für große Koordinaten
+        tolerance = 1e-8
+        if (area1 >= -tolerance && area2 >= -tolerance && area3 >= -tolerance) || 
+           (area1 <= tolerance && area2 <= tolerance && area3 <= tolerance)
+            return triangle
+        end
+    end
+    # Fallback: Bounding-Triangle
+    return d.bounding_triangle
+end
+
+# Erstellt ein neues Dreieck aus drei Punkten
+function create_triangle(a::Punkt, b::Punkt, c::Punkt)
+    # Erstelle Kanten (a->b), (b->c), (c->a)
+    ab = Kante(a, nothing, nothing, nothing, nothing)
+    bc = Kante(b, nothing, nothing, nothing, nothing)
+    ca = Kante(c, nothing, nothing, nothing, nothing)
+
+    # Erstelle Zwillinge (b->a), (c->b), (a->c)
+    ba = Kante(b, ab, nothing, nothing, nothing)
+    cb = Kante(c, bc, nothing, nothing, nothing)
+    ac = Kante(a, ca, nothing, nothing, nothing)
+
+    # Verknüpfe Kanten und Zwillinge
+    ab.twin = ba; ba.twin = ab
+    bc.twin = cb; cb.twin = bc
+    ca.twin = ac; ac.twin = ca
+
+    # Setze next/prev für Kanten im Dreieck (gegen Uhrzeigersinn)
+    ab.next = bc; ab.prev = ca
+    bc.next = ca; bc.prev = ab
+    ca.next = ab; ca.prev = bc
+
+    # Setze next/prev für Zwillinge
+    ba.next = ac; ba.prev = cb
+    cb.next = ba; cb.prev = ac
+    ac.next = cb; ac.prev = ba
+
+    # Erstelle das Dreieck
+    triangle = Dreieck(ab)
+    ab.face = bc.face = ca.face = triangle
+    return triangle
+end
+
+# Erstellt das umfassende Startdreieck
+function create_limit_triangle(n::Float64)
+    margin = 10 * n  # Sicherheitsabstand
+    p1 = Punkt(-margin, -margin)
+    p2 = Punkt(3 * n, -margin)
+    p3 = Punkt(-margin, 3 * n)
+    return create_triangle(p1, p2, p3)
+end
+
+# Initialisiert die Delaunay-Triangulierung
+function start_delaunay(n::Float64)
+    lim_tri = create_limit_triangle(n)
+    delaunay = Delaunay(Set{Dreieck}([lim_tri]), lim_tri)
+    return delaunay
+end
+
+function check_umkreis(e::Kante)
+    if e.twin===nothing || e.face===nothing || e.twin.face===nothing
+        return false
+    end
+    B = e.prev.origin
+    C = e.origin
+    A = e.next.origin
+    D = e.twin.prev.origin
+    return det4(B, C, A, D) > 0
+end
+
+# Überprüft die Delaunay-Bedingung für ein Dreieck und einen Punkt
+function check_umkreis(abc::Dreieck, d::Punkt)
+    a = abc.edge.origin
+    b = abc.edge.next.origin
+    c = abc.edge.next.next.origin
+    
+    # Ignoriere Punkte des Bounding-Triangles
+    if a.x < 0 || a.y < 0 || b.x < 0 || b.y < 0 || c.x < 0 || c.y < 0
+        return false
+    end
+    
+    det_val = det4(a, b, c, d)
+    return det_val > 0
+end
+
+# Führt einen Kanten-Flip durch (Delaunay-Reparatur)
+function flip!(e::Kante, d::Delaunay)
+    # Sicherstellen, dass alle Komponenten existieren
+    if e.twin === nothing || e.face === nothing || e.twin.face === nothing
+        return
+    end
+    
+    # Identifiziere alle relevanten Kanten
+    e_next = e.next
+    e_prev = e.prev
+    e_twin = e.twin
+    e_twin_next = e_twin.next
+    e_twin_prev = e_twin.prev
+    
+    # Identifiziere alle relevanten Punkte
+    a = e.origin
+    b = e.twin.origin
+    c = e_prev.origin
+    d_point = e_twin_prev.origin
+    
+    # Aktualisiere die Verbindungen
+    e.origin = c
+    e.twin.origin = d_point
+    
+    # Aktualisiere next und prev Zeiger
+    e.prev = e_next
+    e.next = e_twin_prev
+    e.twin.next = e_prev
+    e.twin.prev = e_twin_next
+    
+    e_prev.next = e_twin_next
+    e_prev.prev = e.twin
+
+    e_twin_next.next = e.twin
+    e_twin_next.prev = e_prev
+    
+    e_twin_prev.next = e_next
+    e_twin_prev.prev = e
+    
+    e_next.next = e
+    e_next.prev = e_twin_prev
+    
+    # Aktualisiere die Flächenreferenzen
+    for edge in (e, e_next, e_twin_prev)
+        edge.face = e.face     # triangle A-B-D
+    end
+    for edge in (e.twin, e_prev, e_twin_next)
+        edge.face = e.twin.face  # triangle B-C-D
+    end
+    
+    # Aktualisiere die Dreiecksreferenzen
+    e.face.edge = e
+    e.twin.face.edge = e.twin
+end
+
+# Findet eine Kante zwischen zwei Punkten in einem Dreieck
+function find_edge(triangle::Dreieck, from::Punkt, to::Punkt)
+    start = triangle.edge
+    current = start
+    while true
+        if (current.origin == from && current.next.origin == to) ||
+           (current.origin == to && current.next.origin == from)
+            return current
+        end
+        current = current.next
+        current == start && break
+    end
+    return nothing
+end
+
+# Rekursive Flip-Operation zur Delaunay-Reparatur
+function recursive_flip!(e::Kante, d::Delaunay)
+    if e.face === nothing || e.twin === nothing || e.twin.face === nothing
+        return
+    end
+    
+    if check_umkreis(e)
+        flip!(e, d)
+        
+        # Rekursiv für benachbarte Kanten
+        recursive_flip!(e.next, d)
+        recursive_flip!(e.prev, d)
+        recursive_flip!(e.twin.next, d)
+        recursive_flip!(e.twin.prev, d)
+    end
+end
+
+# Fügt einen neuen Punkt in die Triangulierung ein
+function insert_point!(p::Punkt, d::Delaunay)
+    abc = find_triangle(p, d)
+    if abc === nothing
+        abc = d.bounding_triangle
+    end
+
+    a = abc.edge.origin
+    b = abc.edge.next.origin
+    c = abc.edge.next.next.origin
+
+    # Erstelle neue Dreiecke
+    tri_abp = create_triangle(a, b, p)
+    tri_bcp = create_triangle(b, c, p)
+    tri_cap = create_triangle(c, a, p)
+
+    # Verbinde die neuen Dreiecke
+    tri_abp.edge.next.twin = tri_bcp.edge.prev.twin
+    tri_bcp.edge.next.twin = tri_cap.edge.prev.twin
+    tri_cap.edge.next.twin = tri_abp.edge.prev.twin
+
+    # Entferne altes Dreieck (wenn nicht Bounding)
+    if abc != d.bounding_triangle
+        delete!(d.triangles, abc)
+    end
+
+    # Füge neue Dreiecke hinzu
+    push!(d.triangles, tri_abp, tri_bcp, tri_cap)
+
+    # Führe Flips durch
+    recursive_flip!(tri_abp.edge, d)
+    recursive_flip!(tri_bcp.edge, d)
+    recursive_flip!(tri_cap.edge, d)
+end
+
+# Berechnet den Umkreismittelpunkt eines Dreiecks
+function circle_midpoint(a::Punkt, b::Punkt, c::Punkt)
+    D = 2 * (a.x*(b.y - c.y) + b.x*(c.y - a.y) + c.x*(a.y - b.y))
+    
+    Ux = (a.x^2 + a.y^2) * (b.y - c.y) +
+         (b.x^2 + b.y^2) * (c.y - a.y) +
+         (c.x^2 + c.y^2) * (a.y - b.y)
+    
+    Uy = (a.x^2 + a.y^2) * (c.x - b.x) +
+         (b.x^2 + b.y^2) * (a.x - c.x) +
+         (c.x^2 + c.y^2) * (b.x - a.x)
+    
+    return Punkt(Ux/D, Uy/D)
+end
+
+# Konvertiert Delaunay-Triangulierung in Voronoi-Diagramm
+function voronoi(D::Delaunay)
+    cells = Dict{Punkt, Vector{Punkt}}()
+    
+    bound_pts = Set([D.bounding_triangle.edge.origin,
+                     D.bounding_triangle.edge.next.origin,
+                     D.bounding_triangle.edge.next.next.origin])
+    for triangle in D.triangles
+        # Überspringe Bounding-Triangle
+        if triangle == D.bounding_triangle
+            continue
+        end
+        
+        a = triangle.edge.origin
+        b = triangle.edge.next.origin
+        c = triangle.edge.next.next.origin
+        
+        center = circle_midpoint(a, b, c)
+        
+        for vertex in [a, b, c]
+            # Filtere BOUNDING-Punkte!
+            if vertex in bound_pts
+                continue
+            end
+            if vertex ∉ keys(cells)
+                cells[vertex] = Punkt[]
+            end
+            push!(cells[vertex], center)
+        end
+    end
+    
+    # Sortiere Punkte im Uhrzeigersinn
+    for (center, vertices) in cells
+        sort!(vertices, by=v -> atan(v.y - center.y, v.x - center.x))
+    end
+    
+    return cells
+end
