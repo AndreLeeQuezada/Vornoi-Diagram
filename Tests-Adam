@@ -1,0 +1,188 @@
+include("Voronoi.jl")
+using Test
+using LinearAlgebra
+using Main: Punkt, Kante, Dreieck, Delaunay, create_triangle, create_limit_triangle, 
+            start_delaunay, find_triangle, insert_point!, voronoi, circle_midpoint,
+            check_umkreis, flip!, recursive_flip!
+
+@testset "Grundlegende Datenstrukturen" begin
+    @testset "Punkt-Struktur" begin
+        p1 = Punkt(1.0, 2.0)
+        p2 = Punkt(1.0, 2.0)
+        p3 = Punkt(1.5, 2.5)
+        
+        @test p1 == p2
+        @test p1 != p3
+        @test hash(p1) == hash(p2)
+    end
+
+    @testset "Dreieckserstellung" begin
+        a = Punkt(0.0, 0.0)
+        b = Punkt(1.0, 0.0)
+        c = Punkt(0.0, 1.0)
+        tri = create_triangle(a, b, c)
+        
+        @test tri.edge.origin == a
+        @test tri.edge.next.origin == b
+        @test tri.edge.next.next.origin == c
+        @test tri.edge.next.next.next == tri.edge  # Zyklische Struktur
+        
+        # Teste Kantenverknüpfungen
+        @test tri.edge.prev.origin == c
+        @test tri.edge.twin.origin == b
+        @test tri.edge.twin.twin == tri.edge
+        @test tri.edge.face == tri
+    end
+
+    @testset "Bounding-Triangle" begin
+        n = 10.0
+        lim_tri = create_limit_triangle(n)
+        points = [lim_tri.edge.origin, 
+                 lim_tri.edge.next.origin, 
+                 lim_tri.edge.next.next.origin]
+        
+        # Teste Koordinaten
+        @test any(p -> p.x < 0 && p.y < 0, points)  # Linke untere Ecke
+        @test any(p -> p.x > 2*n && p.y < 0, points)  # Rechte untere Ecke
+        @test any(p -> p.x < 0 && p.y > 2*n, points)  # Linke obere Ecke
+    end
+end
+
+@testset "Delaunay-Algorithmus" begin
+    n_val = 10.0  # Lokale Variable für die Feldgröße
+    
+    @testset "Initialisierung" begin
+        d = start_delaunay(n_val)
+        
+        @test length(d.triangles) == 1
+        @test d.bounding_triangle in d.triangles
+    end
+
+    @testset "Dreieckssuche" begin
+        d = start_delaunay(n_val)
+        # Manuelles Hinzufügen eines Testdreiecks
+        test_tri = create_triangle(Punkt(0.0, 0.0), Punkt(1.0, 0.0), Punkt(0.0, 1.0))
+        push!(d.triangles, test_tri)
+        
+        # Punkt innerhalb des Dreiecks
+        @test find_triangle(Punkt(0.1, 0.1), d) == test_tri
+        
+        # Punkt außerhalb (sollte Bounding-Triangle sein)
+        @test find_triangle(Punkt(-5.0, -5.0), d) == d.bounding_triangle
+    end
+
+    @testset "Punktinsertion" begin
+        d = start_delaunay(n_val)
+        p1 = Punkt(1.0, 1.0)
+        insert_point!(p1, d)
+        @test length(d.triangles) == 4  # Bounding + 3 neue
+        
+        # Zweite Punktinsertion
+        p2 = Punkt(2.0, 2.0)
+        insert_point!(p2, d)
+        @test length(d.triangles) >= 5  # Flexibler Test
+        
+        # Insertion außerhalb
+        p3 = Punkt(15.0, 15.0)
+        insert_point!(p3, d)
+        @test length(d.triangles) >= 7  # Flexibler Test
+    end
+
+    @testset "Umkreis-Test" begin
+        a = Punkt(0.0, 0.0)
+        b = Punkt(4.0, 0.0)
+        c = Punkt(0.0, 3.0)
+        d_inside = Punkt(1.0, 1.0)   # Innerhalb des Umkreises
+        d_outside = Punkt(5.0, 5.0)  # Außerhalb des Umkreises
+        tri = create_triangle(a, b, c)
+        
+        @test check_umkreis(tri, d_inside)
+        @test !check_umkreis(tri, d_outside)
+    end
+
+    @testset "Edge-Flip-Operation" begin
+        # Einfacheres Test-Setup
+        a = Punkt(0.0, 0.0)
+        b = Punkt(2.0, 0.0)
+        c = Punkt(1.0, 1.0)
+        d_point = Punkt(1.0, -0.5)  # Garantiert im Umkreis
+        
+        tri1 = create_triangle(a, b, c)
+        tri2 = create_triangle(a, c, d_point)
+        
+        # Verbinde Kanten
+        edge_ac = find_edge(tri1, a, c)
+        edge_ca = find_edge(tri2, c, a)
+        edge_ac.twin = edge_ca
+        edge_ca.twin = edge_ac
+        
+        # Erstelle Delaunay-Objekt
+        delaunay = Delaunay(Set{Dreieck}([tri1, tri2]), tri1)
+        
+        # Führe Flip durch
+        if check_umkreis(edge_ac)
+            flip!(edge_ac, delaunay)
+        end
+        
+        # Überprüfe resultierende Dreiecke
+        found_tri1 = false
+        found_tri2 = false
+        for tri in delaunay.triangles
+            points = Set([tri.edge.origin, tri.edge.next.origin, tri.edge.next.next.origin])
+            if points == Set([a, b, d_point])
+                found_tri1 = true
+            elseif points == Set([b, c, d_point])
+                found_tri2 = true
+            end
+        end
+        
+        @test found_tri1
+        @test found_tri2
+    end
+
+    @testset "Voronoi-Diagramm" begin
+        d = start_delaunay(n_val)
+        insert_point!(Punkt(1.0, 1.0), d)
+        insert_point!(Punkt(3.0, 1.0), d)
+        insert_point!(Punkt(2.0, 3.0), d)
+        
+        cells = voronoi(d)
+        
+        # Extrahiere nur Benutzerpunkte (ignoriere Bounding-Punkte)
+        user_points = [Punkt(1.0, 1.0), Punkt(3.0, 1.0), Punkt(2.0, 3.0)]
+        valid_cells = filter(p -> p.first in user_points, cells)
+        
+        @test length(valid_cells) == 3  # 3 Benutzerzellen
+        for (site, vertices) in valid_cells
+            @test length(vertices) >= 3  # Jede Zelle ist ein Polygon
+            # Teste auf korrekte Sortierung
+            angles = [atan(v.y - site.y, v.x - site.x) for v in vertices]
+            @test issorted(angles)
+        end
+    end
+end
+
+@testset "Hilfsfunktionen" begin
+    @testset "Umkreismittelpunkt" begin
+        a = Punkt(0.0, 0.0)
+        b = Punkt(4.0, 0.0)
+        c = Punkt(0.0, 3.0)
+        center = circle_midpoint(a, b, c)
+        
+        @test center.x ≈ 2.0
+        @test center.y ≈ 1.5
+    end
+
+    @testset "4x4-Determinante" begin
+        a = Punkt(0.0, 0.0)
+        b = Punkt(1.0, 0.0)
+        c = Punkt(0.0, 1.0)
+        d1 = Punkt(1.0, 1.0)  # Auf Umkreis
+        d2 = Punkt(0.5, 0.5)  # Innerhalb
+        
+        @test det4(a, b, c, d1) ≈ 0.0 atol=1e-6
+        @test det4(a, b, c, d2) > 0.0
+    end
+end
+
+println("Alle Tests erfolgreich bestanden!")
